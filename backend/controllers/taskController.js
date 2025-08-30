@@ -8,6 +8,7 @@ const Task = require("../models/Task");
 const calculatePriority = (task) => {
     let score = 0;
 
+    // Priority scoring: High=1, Medium=2, Low=3
     switch(task.priority) {
         case 'High': score += 1; break;
         case 'Medium': score += 2; break;
@@ -15,22 +16,23 @@ const calculatePriority = (task) => {
         default: score += 4;
     }
 
+    // If same priority, sort by due date
     const deadline = new Date(task.dueDate || task.deadline);
     const today = new Date();
-    const daysLeft = (deadline - today) / (1000 * 60 * 60 * 24);
-    score += daysLeft;
+    const daysLeft = Math.ceil((deadline - today) / (1000 * 60 * 60 * 24));
+    score += daysLeft * 0.01; // Small weight for due date within same priority
 
-    if(task.urgent) score -= 1;
+    if(task.urgent) score -= 0.5;
 
     return score;
 };
 
-// Priority Queue: sort tasks by calculated priority
+// Priority Queue: sort tasks by calculated priority (High->Medium->Low, then by due date)
 const getPrioritizedTasks = (tasks) => {
     return tasks.sort((a, b) => calculatePriority(a) - calculatePriority(b));
 };
 
-// Optional Merge Sort for sorting by any key
+// Optional Merge Sort for sorting by any key with custom status order
 const mergeSortTasks = (tasks, key) => {
     if(tasks.length <= 1) return tasks;
 
@@ -41,8 +43,17 @@ const mergeSortTasks = (tasks, key) => {
     const merge = (left, right) => {
         const result = [];
         while(left.length && right.length) {
-            if(left[0][key] <= right[0][key]) result.push(left.shift());
-            else result.push(right.shift());
+            if(key === 'status') {
+                // Custom status order: In Progress -> Pending -> Completed
+                const statusOrder = { 'In Progress': 1, 'Pending': 2, 'Completed': 3 };
+                const leftOrder = statusOrder[left[0][key]] || 4;
+                const rightOrder = statusOrder[right[0][key]] || 4;
+                if(leftOrder <= rightOrder) result.push(left.shift());
+                else result.push(right.shift());
+            } else {
+                if(left[0][key] <= right[0][key]) result.push(left.shift());
+                else result.push(right.shift());
+            }
         }
         return [...result, ...left, ...right];
     };
@@ -60,7 +71,7 @@ const getTasks = async (req, res) => {
         if(status) filter.status = status;
 
         let tasks;
-        if(req.user.role == "admin") {
+        if(req.user.role == "admin"){
             tasks = await Task.find({ ...filter, createdBy: req.user._id }).populate(
                 "assignedTo",
                 "name email profileImageUrl"
@@ -82,24 +93,25 @@ const getTasks = async (req, res) => {
             })
         );
 
-        // Apply Priority Queue
-        tasks = getPrioritizedTasks(tasks);
-
-        // Optional Merge Sort
-        if(sortBy){
+        // Apply sorting logic
+        if(sortBy && sortBy !== 'priority'){
+            // Apply Merge Sort for other sorting criteria
             tasks = mergeSortTasks(tasks, sortBy);
+        } else {
+            // Apply Priority Queue (default sorting or when sortBy is 'priority')
+            tasks = getPrioritizedTasks(tasks);
         }
 
         // Status summary counts
         const userFilter = req.user.role === "admin"
-        ? { createdBy: req.user._id }
-        : { assignedTo: req.user._id };
+    ? { createdBy: req.user._id }
+    : { assignedTo: req.user._id };
 
-       const allTasks = await Task.countDocuments(userFilter);
+const allTasks = await Task.countDocuments(userFilter);
 
        const pendingTasks = await Task.countDocuments({ ...userFilter, status: "Pending" });
-       const inProgressTasks = await Task.countDocuments({ ...userFilter, status: "In Progress" });
-       const completedTasks = await Task.countDocuments({ ...userFilter, status: "Completed" });
+const inProgressTasks = await Task.countDocuments({ ...userFilter, status: "In Progress" });
+const completedTasks = await Task.countDocuments({ ...userFilter, status: "Completed" });
 
         res.json({
             tasks,
@@ -327,7 +339,7 @@ const getDashboardData = async (req, res) => {
         // Fetch recent 10 tasks and prioritize them
         let recentTasks = await Task.find({ createdBy: req.user._id })
             .sort({ createdAt: -1 })
-            .limit(10)
+            .limit(20)
             .select("title status priority dueDate createdAt");
         recentTasks = getPrioritizedTasks(recentTasks);
 
@@ -386,7 +398,7 @@ const getUserDashboardData = async (req, res) => {
         // Recent 10 tasks prioritized
         let recentTasks = await Task.find({ assignedTo: userId})
             .sort({ createdAt: -1 })
-            .limit(10)
+            .limit(20)
             .select("title status priority dueDate createdAt");
         recentTasks = getPrioritizedTasks(recentTasks);
 
